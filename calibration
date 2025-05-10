@@ -1,0 +1,159 @@
+#include "LoRaWan_APP.h"
+#include "Heltec.h"
+#include <Wire.h>
+#include "HT_SSD1306Wire.h"
+#include <ESP32Servo.h>
+
+static SSD1306Wire display(0x3c, 500000, SDA_OLED, SCL_OLED, GEOMETRY_128_64, RST_OLED);
+Servo myservo;
+
+int servoPin = 7;
+int pushButton = 6;
+
+int pos = 90;
+int minPos = 90;
+int maxPos = 90;
+bool toggleState = false;
+
+int mode = 1; // 1 = Set MIN, 2 = Set MAX, 3 = Toggle MIN/MAX
+
+// button handling
+bool buttonPreviouslyPressed = false;
+bool longPressHandled = false;
+unsigned long buttonPressStartTime = 0;
+const unsigned long debounceDelay = 50;
+const unsigned long longPressTimeModeChange = 1500;
+const unsigned long longPressTimeReset = 5000;
+
+void setup() {
+  Serial.begin(115200);
+  Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+  Heltec.VextON();
+  delay(100);
+
+  display.init();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+
+  myservo.setPeriodHertz(50);
+  myservo.attach(servoPin, 400, 2800);
+  myservo.write(90);
+
+  pinMode(pushButton, INPUT_PULLUP);
+
+  display.clear();
+  display.drawString(64, 0, "Start Calibration");
+  display.display();
+}
+
+void loop() {
+  bool buttonState = (digitalRead(pushButton) == LOW);
+  unsigned long now = millis();
+
+  if (buttonState && !buttonPreviouslyPressed) {
+    buttonPressStartTime = now;
+    buttonPreviouslyPressed = true;
+    longPressHandled = false;
+  }
+
+  if (buttonState && buttonPreviouslyPressed) {
+    unsigned long heldTime = now - buttonPressStartTime;
+
+    if (!longPressHandled) {
+      if (mode < 3 && heldTime >= longPressTimeModeChange) {
+        longPressHandled = true;
+        mode++;
+        displayMode();
+        delay(300); // prevent short press from firing after long press
+      } 
+      else if (mode == 3 && heldTime >= longPressTimeReset) {
+        longPressHandled = true;
+        resetCalibration();
+        delay(300); // prevent short press from firing after long press
+      }
+    }
+  }
+
+  if (!buttonState && buttonPreviouslyPressed) {
+    unsigned long releasedTime = now - buttonPressStartTime;
+
+    if (!longPressHandled && releasedTime >= debounceDelay) {
+      handleShortPress();
+    }
+
+    buttonPreviouslyPressed = false;
+    longPressHandled = false;
+  }
+}
+
+void handleShortPress() {
+  if (mode == 1) {
+    pos = max(0, pos - 5);
+    myservo.write(pos);
+    minPos = pos;
+    Serial.printf("Set MIN to %d\n", minPos);
+  }
+  else if (mode == 2) {
+    myservo.write(90);
+    pos = min(180, pos + 5);
+    myservo.write(pos);
+    maxPos = pos;
+    Serial.printf("Set MAX to %d\n", maxPos);
+  }
+  else if (mode == 3) {
+    toggleState = !toggleState;
+    pos = toggleState ? maxPos : minPos;
+    myservo.write(pos);
+    Serial.printf("Moved to %s: %d\n", toggleState ? "MAX" : "MIN", pos);
+  }
+
+  displayPosition();
+}
+
+void displayMode() {
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  if (mode == 1) {
+    display.drawString(64, 0, "Mode: Find MIN");
+  } else if (mode == 2) {
+    display.drawString(64, 0, "Mode: Find MAX");
+  } else if (mode == 3) {
+    display.drawString(64, 0, "Mode: Toggle");
+  }
+  display.display();
+}
+
+void displayPosition() {
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.drawString(0, 0, "MIN: " + String(minPos));
+  display.drawString(0, 10, "MAX: " + String(maxPos));
+  if (mode == 3) {
+    display.drawString(0, 20, String(toggleState ? "POS: MAX" : "POS: MIN"));
+  } else {
+    display.drawString(0, 20, "Current: " + String(pos));
+  }
+  display.display();
+}
+
+void resetCalibration() {
+  Serial.println("Resetting calibration...");
+  pos = 90;
+  minPos = 90;
+  maxPos = 90;
+  myservo.write(90);
+  mode = 1;
+  toggleState = false;
+
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 0, "Calibration Reset");
+  display.display();
+  delay(1000);
+  displayMode();
+}
